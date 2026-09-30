@@ -1,25 +1,30 @@
-from os import path
+from os import path, urandom
+import base64
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.fernet import Fernet
+import json
 
 def main():
 
     # 1- get master password
-    master_password = input("Master password: ").strip()
+    master_password = input("Master password: ").strip().encode()
 
     # 2- generate a random salt and store it localy
     # the salt.txt existance indicates that the user previously created a password
-    if not path.exists("salt.txt"):
-        salt = generate_salt()
-        with open("salt.txt", "w") as f:
+    if not path.exists("salt.enc"):
+        salt = urandom(16)
+        with open("salt.enc", "wb") as f:
             f.write(salt)
     else:
-        with open("salt.txt", "r") as f:
+        with open("salt.enc", "rb") as f:
             salt = f.read()
 
-    # 3- combine the master password with the salt
-    master_password += salt
-
     # 4- deriving a key from the master password
-    key = deriving_key(master_password)
+    key = deriving_key(master_password, salt)
+
+    #
+    cipher = Fernet(key)
 
     # 5- create json file if not exist
     if not path.exists("log.json"):
@@ -28,16 +33,17 @@ def main():
 
     # 6- store the encrypted VALIDWORD
     VALIDWORD = "VALID_KEY"
-    if not path.exists("valid_key.txt"):
-        with open("valid_key.txt", "w") as f:
-            f.write(encryptor(VALIDWORD, key))
+    if not path.exists("valid_key.enc"):
+        with open("valid_key.enc", "wb") as f:
+            f.write(cipher.encrypt(VALIDWORD.encode()))
     # check if the user entred the correct password
     else:
-        with open("valid_key.txt", "r") as f:
-            decrypted_word = encryptor(f.read(), key * -1)
-        if decrypted_word != VALIDWORD:
-            print("Invalid password!")
-            return 0                    
+        with open("valid_key.enc", "rb") as f:
+            try:
+                cipher.decrypt(f.read()).decode()
+            except:
+                print("Invalid password!")
+                return 0                    
 
     while True:
         # 7- display options
@@ -49,62 +55,35 @@ def main():
         choice = input("choose a number:").strip()
 
         if choice == "1":
-            register(key)
+            register(cipher)
         elif choice == "2":
-            view(key)
+            view(cipher)
         elif choice == "3":
             break
         else:
             print("Invalid choice!")
 
-# - generate a random salt 
-from random import choice, shuffle
-from string import ascii_uppercase, ascii_lowercase, digits
-
-def generate_salt():
-    parts = (ascii_uppercase, ascii_lowercase, digits)
-    salt = [choice(parts[i]) for i in range(len(parts))]
-    shuffle(salt)
-    return "".join(salt)
-
 # - deriving a key from the master password
-def deriving_key(password):
-    total = 0
-    for char in password:
-        total += ord(char)
-    return total % 26
+def deriving_key(password, _salt):
+    # Key mixer
+    kdf = PBKDF2HMAC(
+    algorithm=hashes.SHA256(),
+    length=32,          
+    salt=_salt,
+    iterations=600000)
+    key = base64.urlsafe_b64encode(kdf.derive(password))
+    return key
 
-UPPER_START = ord("A")
-LOWER_START = ord("a")
-DIGIT_START = ord("0")
 
-def encryptor(text, _key):
-    result = ""
-    for char in text:
-        # - Preserve the letter's case
-        if char.isalpha():
-            if char.islower():
-                shift = (((ord(char) - LOWER_START) + _key) % 26) + LOWER_START
-            else:
-                shift = (((ord(char) - UPPER_START) + _key) % 26) + UPPER_START
-        elif char.isdigit():
-            shift = (((ord(char) - DIGIT_START ) + _key) % 10) + DIGIT_START
-        # - Preserve any non alphabetic char
-        else:
-            result += char
-            continue   
-        result += chr(shift) 
-    return result
-
-import json
-
-def register(key):
+def register(cipher):
     # 1- get infos
     account = input("Account: ").strip()
     password = input("password: ").strip()
     # 2- encrypte infos:
+    cipher_account = cipher.encrypt(account.encode()).decode()
+    cipher_password = cipher.encrypt(password.encode()).decode()
     encrypted_data = {
-        encryptor(account, key): encryptor(password, key)
+        cipher_account: cipher_password 
         }
     # 3- load stored data
     with open("log.json", "r") as f:
@@ -115,15 +94,16 @@ def register(key):
         json.dump(data, f)
     print("data registred successfuly.")
 
-def view(key):
+def view(cipher):
     # 1- load data from the json file:
     with open("log.json", "r") as f:
         data = json.load(f)
     # 2- decrypte data and display it
     print("-" * 10)
     for cipher_account, cipher_password in data.items():
-        print(encryptor(cipher_account, key * -1),
+        print(cipher.decrypt(cipher_account.encode()).decode(),
               "|",
-              encryptor(cipher_password, key * -1))
+              cipher.decrypt(cipher_password.encode()).decode())
     print("-" * 10)
 main()
+
